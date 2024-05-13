@@ -99,6 +99,8 @@ class BaseTorchModel:
         self.model = None
         self.model_is_init = False 
         self.model_is_load = False
+        self.model_awake = False
+        self.name = '基础'
         self.model_path = model_path
         if device == 'cuda':
             if self.check_cuda():
@@ -128,8 +130,30 @@ class BaseTorchModel:
                 log.warning('显卡不支持半精度，改为全精度加载')
                 self.model = self.model.to(self.device)
         self.model.eval()
+        self.model_awake = True
         self.model_is_load = True
-        
+    
+    def sleep_model(self,device=None):
+        if device == None:
+            device == self.device
+        if device == 'cuda':
+            self.model.cpu()
+            self.model.eval()
+            self.model_awake = False
+        torch.cuda.empty_cache()
+        log.info(f'{self.name}模型已休眠')
+    
+    def awake_model(self,device = None):
+        if device == None:
+            device == self.device
+        if self.model_awake == False and device == 'cuda':
+            self.model.cuda()
+            self.model.eval()
+            self.model_awake = True
+        else:
+            self.model_awake = True
+        log.info(f'{self.name}模型已唤醒')
+    
 class BaseTransformerModel(BaseTorchModel):
     def __init__(self,model_path,device):
         super().__init__(model_path,device)
@@ -137,6 +161,7 @@ class BaseTransformerModel(BaseTorchModel):
 class BertModel(BaseTorchModel):
     def __init__(self,model_path,device):
         super().__init__(model_path,device)
+        self.name = 'Bert'
         self.init_tokenizer()
         self.init_model()
         
@@ -191,7 +216,8 @@ class BertModel(BaseTorchModel):
                 output_device = use_device
         if use_device is None:
             use_device = self.device
-
+        
+        self.awake_model(use_device)
             
         if language in {"en","all_zh","all_ja"}:
             language = language.replace("all_","")
@@ -252,6 +278,7 @@ class BertModel(BaseTorchModel):
 class CnhubertModel(BaseTorchModel):
     def __init__(self,model_path,device):
         super().__init__(model_path,device)
+        self.name = 'SSL'
         self.init_model()
     
     def init_model(self):
@@ -262,6 +289,7 @@ class CnhubertModel(BaseTorchModel):
 class SovitsModel(BaseTorchModel):
     def __init__(self,model_path,device):
         super().__init__(model_path,device)
+        self.name = 'Sovits'
         self.init_model()
     
     def init_model(self):
@@ -295,6 +323,7 @@ class SovitsModel(BaseTorchModel):
 class GptModel(BaseTorchModel):
     def __init__(self,model_path,device):
         super().__init__(model_path,device)
+        self.name = 'GPT'
         self.init_model()
     
     def init_model(self):
@@ -338,10 +367,11 @@ class Generator():
             self.final_device = 'cpu'
         if self.sovits_model.is_half or self.gpt_model.is_half or self.bert_model.is_half :
             self.final_half = True
+            self.final_dtype = torch.float16
         else:
             self.final_device = False
-
-            
+            self.final_dtype = torch.float32
+    
     def get_tts_wav(self, ref_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut=i18n("不切"), top_k=20, top_p=0.6, temperature=0.6, ref_free = False):
         if prompt_text is None or len(prompt_text) == 0:
             ref_free = True
@@ -374,11 +404,12 @@ class Generator():
                 wav16k = wav16k.to(self.ssl_model.device)
                 zero_wav_torch = zero_wav_torch.to(self.ssl_model.device)
             wav16k = torch.cat([wav16k, zero_wav_torch])
+            self.ssl_model.awake_model()
             ssl_content = self.ssl_model.model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2).to(self.sovits_model.device).to(self.sovits_model.dtype)  # .float()
+            self.ssl_model.sleep_model()
+            codes = self.sovits_model.model.extract_latent(ssl_content)
     
-            codes = self.sovits_model.model.extract_latent(ssl_content).to(self.final_device)
-    
-            prompt_semantic = codes[0, 0].unsqueeze(0)
+            prompt_semantic = codes[0, 0].unsqueeze(0).to(self.gpt_model.device).to(self.gpt_model.dtype)
         t1 = ttime()
 
         if (how_to_cut == i18n("凑四句一切")):
@@ -398,7 +429,7 @@ class Generator():
         texts = self.merge_short_text_in_array(texts, 5)
         audio_opt = []
         if not ref_free:
-            phones1,bert1,norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language)
+            phones1,bert1,norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language,self.bert_model.device,self.final_device)
 
         for text in texts:
             # 解决输入目标文本的空行导致报错的问题
@@ -406,20 +437,21 @@ class Generator():
                 continue
             if (text[-1] not in self.splits): text += "。" if text_language != "en" else "."
             print(i18n("实际输入的目标文本(每句):"), text)
-            phones2,bert2,norm_text2=self.bert_model.get_phones_and_bert(text, text_language)
+            phones2,bert2,norm_text2=self.bert_model.get_phones_and_bert(text, text_language,self.bert_model.device,self.final_device)
+            self.bert_model.sleep_model(self.bert_model.device)
             print(i18n("前端处理后的文本(每句):"), norm_text2)
             if not ref_free:
                 bert = torch.cat([bert1, bert2], 1)
-                all_phoneme_ids = torch.LongTensor(phones1+phones2).to(self.final_device).unsqueeze(0)
+                all_phoneme_ids = torch.LongTensor(phones1+phones2).to(self.gpt_model.device).unsqueeze(0)
             else:
                 bert = bert2
-                all_phoneme_ids = torch.LongTensor(phones2).to(self.final_device).unsqueeze(0)
-
-            bert = bert.unsqueeze(0)
-            all_phoneme_len = torch.tensor([all_phoneme_ids.shape[-1]]).to(self.final_device)
+                all_phoneme_ids = torch.LongTensor(phones2).to(self.gpt_model.device).unsqueeze(0)
+            bert = bert.unsqueeze(0).to(self.gpt_model.device).to(self.gpt_model.dtype)
+            all_phoneme_len = torch.tensor([all_phoneme_ids.shape[-1]]).to(self.gpt_model.device).to(self.gpt_model.dtype)
             t2 = ttime()
             with torch.no_grad():
                 # pred_semantic = t2s_model.model.infer(
+                self.gpt_model.awake_model()
                 pred_semantic, idx = self.gpt_model.model.model.infer_panel(
                     all_phoneme_ids,
                     all_phoneme_len,
@@ -431,25 +463,28 @@ class Generator():
                     temperature=temperature,
                     early_stop_num=self.gpt_model.hz * self.gpt_model.max_sec,
                 )
+                self.gpt_model.sleep_model()
             t3 = ttime()
             # print(pred_semantic.shape,idx)
             pred_semantic = pred_semantic[:, -idx:].unsqueeze(
                 0
             )  # .unsqueeze(0)#mq要多unsqueeze一次
             refer = self.sovits_model.get_spepc(ref_wav_path)  # .to(device)
-            if self.final_half == True:
-                refer = refer.half().to(self.final_device)
+            if self.sovits_model.is_half == True:
+                refer = refer.half().to(self.sovits_model.device)
             else:
-                refer = refer.to(self.final_device)
+                refer = refer.to(self.sovits_model.device)
             # audio = vq_model.decode(pred_semantic, all_phoneme_ids, refer).detach().cpu().numpy()[0, 0]
+            self.sovits_model.awake_model()
             audio = (
                 self.sovits_model.model.decode(
-                    pred_semantic, torch.LongTensor(phones2).to(self.final_device).unsqueeze(0), refer
+                    pred_semantic.to(self.sovits_model.device), torch.LongTensor(phones2).to(self.sovits_model.device).unsqueeze(0), refer
                 )
                     .detach()
                     .cpu()
                     .numpy()[0, 0]
             )  ###试试重建不带上prompt部分
+            self.sovits_model.sleep_model()
             max_audio=np.abs(audio).max()#简单防止16bit爆音
             if max_audio>1:audio/=max_audio
             audio_opt.append(audio)
