@@ -129,13 +129,12 @@ class BaseTorchModel:
             except:
                 log.warning('显卡不支持半精度，改为全精度加载')
                 self.model = self.model.to(self.device)
-        self.model.eval()
         self.model_awake = True
         self.model_is_load = True
     
     def sleep_model(self,device=None):
         if device == None:
-            device == self.device
+            device = self.device
         if device == 'cuda':
             self.model.cpu()
             self.model.eval()
@@ -145,9 +144,12 @@ class BaseTorchModel:
     
     def awake_model(self,device = None):
         if device == None:
-            device == self.device
+            device = self.device
         if self.model_awake == False and device == 'cuda':
-            self.model.cuda()
+            if self.is_half:
+                self.model.half().cuda()
+            else:
+                self.model.cuda()
             self.model.eval()
             self.model_awake = True
         else:
@@ -184,7 +186,7 @@ class BertModel(BaseTorchModel):
         with torch.no_grad():
             inputs = self.tokenizer(text, return_tensors="pt")
             for i in inputs:
-                inputs[i] = inputs[i].to(self.device)
+                inputs[i] = inputs[i].to(device)
             res = self.model(**inputs, output_hidden_states=True)
             res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
         assert len(word2ph) == len(text)
@@ -193,7 +195,7 @@ class BertModel(BaseTorchModel):
             repeat_feature = res[i].repeat(word2ph[i], 1)
             phone_level_feature.append(repeat_feature)
         phone_level_feature = torch.cat(phone_level_feature, dim=0)
-        return phone_level_feature.T.to(device)
+        return phone_level_feature.T
     
     def get_bert_inf(self, phones, word2ph, norm_text, language, device=None):
         if device is None:
@@ -203,10 +205,10 @@ class BertModel(BaseTorchModel):
         else:
             bert = torch.zeros(
                 (1024, len(phones)),
-                self.dtype,
-            ).to(device)
+                dtype=self.dtype
+            )
 
-        return bert
+        return bert.to(device)
 
     def get_phones_and_bert(self,text,language,use_device=None,output_device=None):
         if output_device is None:
@@ -272,7 +274,7 @@ class BertModel(BaseTorchModel):
             bert = torch.cat(bert_list, dim=1)
             phones = sum(phones_list, [])
             norm_text = ''.join(norm_text_list)
-
+        self.sleep_model()
         return phones,bert.to(output_device).to(self.dtype),norm_text
 
 class CnhubertModel(BaseTorchModel):
@@ -292,8 +294,31 @@ class SovitsModel(BaseTorchModel):
         self.name = 'Sovits'
         self.init_model()
     
+    def load_model(self):
+        if not self.model_is_init:
+            raise ModelException('模型未初始化')
+        self.is_half = False
+        self.dtype = torch.float32
+        if self.device != 'cuda':
+            self.model = self.model.to(self.device)
+        
+        else:
+            try:
+                self.model = self.model.half().to(device)
+                self.is_half = True
+                self.dtype = torch.float16
+            except:
+                log.warning('显卡不支持半精度，改为全精度加载')
+                self.model = self.model.to(self.device)
+        self.model.eval()
+        self.model.load_state_dict(self.dict_s2["weight"], strict=False)
+        self.model_awake = True
+        self.model_is_load = True
+    
+    
     def init_model(self):
-        self.hps = DictToAttrRecursive(torch.load(sovits_path, map_location=self.device)["config"])
+        self.dict_s2 = torch.load(self.model_path, map_location="cpu")
+        self.hps = DictToAttrRecursive(self.dict_s2["config"])
         self.hps.model.semantic_frame_rate = "25hz"
         self.model = SynthesizerTrn(
             self.hps.data.filter_length // 2 + 1,
@@ -325,9 +350,29 @@ class GptModel(BaseTorchModel):
         super().__init__(model_path,device)
         self.name = 'GPT'
         self.init_model()
-    
+
+    def load_model(self):
+        if not self.model_is_init:
+            raise ModelException('模型未初始化')
+        self.is_half = False
+        self.dtype = torch.float32
+        if self.device != 'cuda':
+            self.model = self.model.to(self.device)
+        
+        else:
+            try:
+                self.model = self.model.half().to(device)
+                self.is_half = True
+                self.dtype = torch.float16
+            except:
+                log.warning('显卡不支持半精度，改为全精度加载')
+                self.model = self.model.to(self.device)
+        self.model.eval()
+        self.model_awake = True
+        self.model_is_load = True
+        
     def init_model(self):
-        dict_s1 = torch.load(self.model_path, map_location=self.device)
+        dict_s1 = torch.load(self.model_path, map_location="cpu")
         self.hz = 50
         self.config = dict_s1["config"]
         self.max_sec = self.config["data"]["max_sec"]
@@ -342,6 +387,10 @@ class Generator():
         self.bert_model = bert_model
         self.ssl_model = ssl_model
         self.reuse_objects = {}
+        self.ref_wav_result = None
+        self.phones1 = None
+        self.bert1 = None 
+        self.norm_text1 = None
         self.splits = {"，", "。", "？", "！", ",", ".", "?", "!", "~", ":", "：", "—", "…", }
         self.dict_language = {
                 i18n("中文"): "all_zh",#全部按中文识别
@@ -354,12 +403,16 @@ class Generator():
         
         if not self.sovits_model.model_is_load:
             self.sovits_model.load_model()
+            # self.sovits_model.sleep_model()
         if not self.gpt_model.model_is_load:
             self.gpt_model.load_model()
+            self.gpt_model.sleep_model()
         if not self.bert_model.model_is_load:
             self.bert_model.load_model()
+            self.bert_model.sleep_model()
         if not self.ssl_model.model_is_load:
             self.ssl_model.load_model()
+            self.ssl_model.sleep_model()
     
         if self.sovits_model.device == 'cuda' or self.gpt_model.device == 'cuda' or self.bert_model.device == 'cuda':
             self.final_device = 'cuda'
@@ -370,8 +423,9 @@ class Generator():
             self.final_dtype = torch.float16
         else:
             self.final_device = False
-            self.final_dtype = torch.float32
-    
+            self.final_dtype = torch.float32        
+        
+        
     def get_tts_wav(self, ref_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut=i18n("不切"), top_k=20, top_p=0.6, temperature=0.6, ref_free = False):
         if prompt_text is None or len(prompt_text) == 0:
             ref_free = True
@@ -391,25 +445,30 @@ class Generator():
             dtype=np.float16 if self.sovits_model.is_half == True else np.float32
         )
         # 解析参考音频
-        with torch.no_grad():
-            wav16k, sr = librosa.load(ref_wav_path, sr=16000)
-            if (wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000):
-                raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
-            wav16k = torch.from_numpy(wav16k)
-            zero_wav_torch = torch.from_numpy(zero_wav)
-            if self.ssl_model.is_half == True:
-                wav16k = wav16k.half().to(self.ssl_model.device)
-                zero_wav_torch = zero_wav_torch.half().to(self.ssl_model.device)
-            else:
-                wav16k = wav16k.to(self.ssl_model.device)
-                zero_wav_torch = zero_wav_torch.to(self.ssl_model.device)
-            wav16k = torch.cat([wav16k, zero_wav_torch])
-            self.ssl_model.awake_model()
-            ssl_content = self.ssl_model.model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2).to(self.sovits_model.device).to(self.sovits_model.dtype)  # .float()
-            self.ssl_model.sleep_model()
-            codes = self.sovits_model.model.extract_latent(ssl_content)
-    
-            prompt_semantic = codes[0, 0].unsqueeze(0).to(self.gpt_model.device).to(self.gpt_model.dtype)
+        if self.ref_wav_result is None:
+            with torch.no_grad():
+                wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+                if (wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000):
+                    raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
+                wav16k = torch.from_numpy(wav16k)
+                zero_wav_torch = torch.from_numpy(zero_wav)
+                if self.ssl_model.is_half == True:
+                    wav16k = wav16k.half().to(self.ssl_model.device)
+                    zero_wav_torch = zero_wav_torch.half().to(self.ssl_model.device)
+                else:
+                    wav16k = wav16k.to(self.ssl_model.device)
+                    zero_wav_torch = zero_wav_torch.to(self.ssl_model.device)
+                wav16k = torch.cat([wav16k, zero_wav_torch])
+                self.ssl_model.awake_model()
+                ssl_content = self.ssl_model.model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2).to(self.sovits_model.device).to(self.sovits_model.dtype)  # .float()
+                self.ssl_model.sleep_model()
+                codes = self.sovits_model.model.extract_latent(ssl_content)
+        
+                prompt_semantic = codes[0, 0].unsqueeze(0).to(self.gpt_model.device)
+                self.ref_wav_result = prompt_semantic
+        else:
+            log.info('参考音频复用！')
+            prompt_semantic = self.ref_wav_result
         t1 = ttime()
 
         if (how_to_cut == i18n("凑四句一切")):
@@ -429,8 +488,10 @@ class Generator():
         texts = self.merge_short_text_in_array(texts, 5)
         audio_opt = []
         if not ref_free:
-            phones1,bert1,norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language,self.bert_model.device,self.final_device)
-
+            if self.phones1 is None or self.bert1 is None or self.norm_text1 is None:
+                self.phones1,self.bert1,self.norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language,self.bert_model.device,self.final_device)
+            else:
+                log.info('参考音频文本解析复用！')
         for text in texts:
             # 解决输入目标文本的空行导致报错的问题
             if (len(text.strip()) == 0):
@@ -438,11 +499,10 @@ class Generator():
             if (text[-1] not in self.splits): text += "。" if text_language != "en" else "."
             print(i18n("实际输入的目标文本(每句):"), text)
             phones2,bert2,norm_text2=self.bert_model.get_phones_and_bert(text, text_language,self.bert_model.device,self.final_device)
-            self.bert_model.sleep_model(self.bert_model.device)
             print(i18n("前端处理后的文本(每句):"), norm_text2)
             if not ref_free:
-                bert = torch.cat([bert1, bert2], 1)
-                all_phoneme_ids = torch.LongTensor(phones1+phones2).to(self.gpt_model.device).unsqueeze(0)
+                bert = torch.cat([self.bert1, bert2], 1)
+                all_phoneme_ids = torch.LongTensor(self.phones1+phones2).to(self.gpt_model.device).unsqueeze(0)
             else:
                 bert = bert2
                 all_phoneme_ids = torch.LongTensor(phones2).to(self.gpt_model.device).unsqueeze(0)
