@@ -343,6 +343,8 @@ class SovitsModel(BaseTorchModel):
             self.hps.data.win_length,
             center=False,
         )
+        del audio_norm,audio
+        torch.cuda.empty_cache()
         return spec
 
 class GptModel(BaseTorchModel):
@@ -463,8 +465,9 @@ class Generator():
                 ssl_content = self.ssl_model.model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(1, 2).to(self.sovits_model.device).to(self.sovits_model.dtype)  # .float()
                 self.ssl_model.sleep_model()
                 codes = self.sovits_model.model.extract_latent(ssl_content)
-        
                 prompt_semantic = codes[0, 0].unsqueeze(0).to(self.gpt_model.device)
+                del wav16k,zero_wav_torch,ssl_content,codes
+                torch.cuda.empty_cache()
                 self.ref_wav_result = prompt_semantic
         else:
             log.info('参考音频复用！')
@@ -483,13 +486,52 @@ class Generator():
             text = self.cut5(text)
         while "\n\n" in text:
             text = text.replace("\n\n", "\n")
+        texts = text.split("\n")
+        if len(texts) == 1:
+            text = self.cut3(texts[0])
+            texts = text.split("\n")
+        cut_depth = 0
+        result_texts = []
+        while True:
+            end_loop = True
+            result_texts = []
+            for index,item in enumerate(texts):
+                if len(item) > 30:
+                    end_loop = False
+                    if cut_depth == 0:
+                        temp_text = self.cut1(item)
+                        temp_list = temp_text.split("\n")
+                        for inner_item in temp_list:
+                            result_texts.append(inner_item)
+                    elif cut_depth == 1:
+                        temp_text = self.cut5(item)
+                        temp_list = temp_text.split("\n")
+                        for inner_item in temp_list:
+                            result_texts.append(inner_item)
+                    elif cut_depth == 2:
+                        temp_text = self.cut5(temp_text)
+                        temp_list = temp_text.split("\n")
+                        for inner_item in temp_list:
+                            result_texts.append(inner_item)
+                    elif cut_depth == 3:
+                        temp_text = self.cut2(item,40)
+                        temp_list = temp_text.split("\n")
+                        for inner_item in temp_list:
+                            result_texts.append(inner_item)
+                else:
+                    result_texts.append(item)
+            texts = result_texts
+            if end_loop:
+                break
+            else:
+                cut_depth += 1
         print(i18n("实际输入的目标文本(切句后):"), text)
         texts = text.split("\n")
         texts = self.merge_short_text_in_array(texts, 5)
         audio_opt = []
         if not ref_free:
             if self.phones1 is None or self.bert1 is None or self.norm_text1 is None:
-                self.phones1,self.bert1,self.norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language,self.bert_model.device,self.final_device)
+                self.phones1,self.bert1,self.norm_text1=self.bert_model.get_phones_and_bert(prompt_text, prompt_language,self.bert_model.device,'cpu')
             else:
                 log.info('参考音频文本解析复用！')
         for text in texts:
@@ -501,7 +543,7 @@ class Generator():
             phones2,bert2,norm_text2=self.bert_model.get_phones_and_bert(text, text_language,self.bert_model.device,self.final_device)
             print(i18n("前端处理后的文本(每句):"), norm_text2)
             if not ref_free:
-                bert = torch.cat([self.bert1, bert2], 1)
+                bert = torch.cat([self.bert1, bert2.to('cpu')], 1)
                 all_phoneme_ids = torch.LongTensor(self.phones1+phones2).to(self.gpt_model.device).unsqueeze(0)
             else:
                 bert = bert2
@@ -516,13 +558,14 @@ class Generator():
                     all_phoneme_ids,
                     all_phoneme_len,
                     None if ref_free else prompt_semantic,
-                    bert,
+                    bert.to(self.gpt_model.device),
                     # prompt_phone_len=ph_offset,
                     top_k=top_k,
                     top_p=top_p,
                     temperature=temperature,
                     early_stop_num=self.gpt_model.hz * self.gpt_model.max_sec,
                 )
+                del all_phoneme_ids,all_phoneme_len,bert,prompt_semantic
                 self.gpt_model.sleep_model()
             t3 = ttime()
             # print(pred_semantic.shape,idx)
@@ -536,14 +579,16 @@ class Generator():
                 refer = refer.to(self.sovits_model.device)
             # audio = vq_model.decode(pred_semantic, all_phoneme_ids, refer).detach().cpu().numpy()[0, 0]
             self.sovits_model.awake_model()
+            phones2_tensor = torch.LongTensor(phones2).to(self.sovits_model.device).unsqueeze(0)
             audio = (
                 self.sovits_model.model.decode(
-                    pred_semantic.to(self.sovits_model.device), torch.LongTensor(phones2).to(self.sovits_model.device).unsqueeze(0), refer
+                    pred_semantic.to(self.sovits_model.device), phones2_tensor, refer
                 )
                     .detach()
                     .cpu()
                     .numpy()[0, 0]
             )  ###试试重建不带上prompt部分
+            del phones2_tensor,refer
             self.sovits_model.sleep_model()
             max_audio=np.abs(audio).max()#简单防止16bit爆音
             if max_audio>1:audio/=max_audio
@@ -586,27 +631,21 @@ class Generator():
             opts = [inp]
         return "\n".join(opts)
 
-    def cut2(self,inp):
+    @staticmethod
+    def cut2(inp,cut_num=30):
         inp = inp.strip("\n")
-        inps = self.split(inp)
-        if len(inps) < 2:
-            return inp
+        count = 0
         opts = []
-        summ = 0
         tmp_str = ""
-        for i in range(len(inps)):
-            summ += len(inps[i])
-            tmp_str += inps[i]
-            if summ > 50:
-                summ = 0
+        for i in range(len(inp)):
+            count += 1
+            tmp_str += inp[i]
+            if count >= cut_num:
                 opts.append(tmp_str)
-                tmp_str = ""
-        if tmp_str != "":
+                count = 0
+                tmp_str = ''
+        if tmp_str != '':
             opts.append(tmp_str)
-        # print(opts)
-        if len(opts) > 1 and len(opts[-1]) < 50:  ##如果最后一个太短了，和前一个合一起
-            opts[-2] = opts[-2] + opts[-1]
-            opts = opts[:-1]
         return "\n".join(opts)
 
     @staticmethod
