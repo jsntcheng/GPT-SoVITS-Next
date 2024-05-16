@@ -705,13 +705,4 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
-bert_model = BertModel(bert_path,device)
-
-ssl_model = CnhubertModel(cnhubert_base_path,device)
-
-sovits_model = SovitsModel(sovits_path,device)
-
-gpt_model = GptModel(gpt_path,device)
-
-generator = Generator(sovits_model,gpt_model,bert_model,ssl_model)
 

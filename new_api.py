@@ -119,4 +119,4 @@ def init_generator(voice_id):
     return generator
 
 if __name__ == '__main__':
-    uvicorn.run(app='new_api:app', reload=True, host='0.0.0.0', port=8000)
+    uvicorn.run(app='new_api:app', reload=True, host='0.0.0.0', port=8001)
