@@ -31,6 +31,15 @@ from module.mel_processing import spectrogram_torch
 from my_utils import load_audio
 from tools.i18n.i18n import I18nAuto
 
+# 标点预测
+from modelscope.pipelines import pipeline
+from modelscope.utils.constant import Tasks
+
+punc_pipline = pipeline(
+    task=Tasks.punctuation,
+    model='iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+    model_revision="v2.0.4")
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if os.path.exists("./gweight.txt"):
     with open("./gweight.txt", 'r', encoding="utf-8") as file:
@@ -428,7 +437,7 @@ class Generator():
             self.final_dtype = torch.float32        
         
         
-    def get_tts_wav(self, ref_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut=i18n("不切"), top_k=20, top_p=0.6, temperature=0.6, ref_free = False):
+    def get_tts_wav(self, ref_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut=i18n("不切"), top_k=20, top_p=0.6, temperature=0.6, ref_free = False, stream=False):
         if prompt_text is None or len(prompt_text) == 0:
             ref_free = True
         t0 = ttime()
@@ -488,6 +497,7 @@ class Generator():
             text = text.replace("\n\n", "\n")
         texts = text.split("\n")
         if len(texts) == 1:
+            rec_result = punc_pipline(input=texts[0])[0]['text']
             text = self.cut3(texts[0])
             texts = text.split("\n")
         cut_depth = 0
@@ -509,6 +519,7 @@ class Generator():
                         for inner_item in temp_list:
                             result_texts.append(inner_item)
                     elif cut_depth == 2:
+                        temp_text = punc_pipline(input=item)[0]['text']
                         temp_text = self.cut5(temp_text)
                         temp_list = temp_text.split("\n")
                         for inner_item in temp_list:
@@ -596,14 +607,17 @@ class Generator():
             audio_opt.append(audio)
             audio_opt.append(zero_wav)
             t4 = ttime()
+            if stream:
+                yield (np.concatenate([audio, zero_wav], 0) * 32768).astype(np.int16).tobytes()
         del prompt_semantic
         torch.cuda.empty_cache()
         self.gpt_model.sleep_model()
         self.sovits_model.sleep_model()
         print("%.3f\t%.3f\t%.3f\t%.3f" % (t1 - t0, t2 - t1, t3 - t2, t4 - t3))
-        yield self.sovits_model.hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(
-            np.int16
-        )
+        if not stream:
+            yield self.sovits_model.hps.data.sampling_rate, (np.concatenate(audio_opt, 0) * 32768).astype(
+                np.int16
+            )
 
     def split(self,todo_text):
         todo_text = todo_text.replace("……", "。").replace("——", "，")
@@ -700,6 +714,7 @@ class Generator():
         pattern = "[" + "".join(re.escape(sep) for sep in self.splits) + "]"
         text = re.split(pattern, text)[0].strip()
         return text
+
 
 
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # 确保直接启动推理UI时也能够设置。
