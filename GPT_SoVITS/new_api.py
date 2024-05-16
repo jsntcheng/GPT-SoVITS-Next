@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import uvicorn
 import time
 import torch
-from GPT_SoVITS.generate_object import BertModel,CnhubertModel,SovitsModel,GptModel,Generator,cnhubert_base_path,bert_path,device,i18n
+from generate_object import BertModel,CnhubertModel,SovitsModel,GptModel,Generator,cnhubert_base_path,bert_path,device,i18n
 
 app = FastAPI()
 if torch.cuda.is_available():
@@ -98,9 +98,9 @@ async def tts_flow_test(text:str):
 
 def get_model_info(voice_id):
     
-    sovits_path = '/root/GPT-SoVITS-Next/SoVITS_weights/276.pth'
-    gpt_path = '/root/GPT-SoVITS-Next/GPT_weights/276.ckpt'
-    prompt_info = {'ref_wav_path':'/root/GPT-SoVITS-Next/notype1 (1).wav',
+    sovits_path = r'C:\Users\Administrator\Downloads\GPT-SoVITS-Next\SoVITS_weights\276.pth'
+    gpt_path = r'C:\Users\Administrator\Downloads\GPT-SoVITS-Next\GPT_weights\276.ckpt'
+    prompt_info = {'ref_wav_path':r'C:\Users\Administrator\Downloads\GPT-SoVITS-Next\notype1.wav',
                    'prompt_text':'请帮我看一眼这封邮件，请给我来一份招牌菜。',
                    'prompt_language':i18n("中英混合"),
                    }
