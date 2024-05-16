@@ -1,8 +1,10 @@
 import json
 import io
 import wave
-from fastapi import FastAPI,Body
+import asyncio
+from fastapi import FastAPI,Body,Request
 from fastapi.responses import StreamingResponse
+from requests.exceptions import ConnectionError
 from pydantic import BaseModel
 import uvicorn
 import time
@@ -48,7 +50,7 @@ def wave_header_chunk(frame_input=b"", channels=1, sample_width=2, sample_rate=3
     wav_buf.seek(0)
     return wav_buf.read()
 
-async def generate_tts_flow(generator,word,language,top_k,top_p,temperature,wave_head):
+def generate_tts_flow(generator,word,language,top_k,top_p,temperature,wave_head):
     if generator.last_gen != word:
         generator.last_gen = word
         word = word.split('***|||***')[0]
@@ -84,7 +86,7 @@ def tts_flow(input_params:SpeakWordRequest = Body(...)):
 
 
 @app.get('/tts_flow_test')
-async def tts_flow_test(text:str):
+def tts_flow_test(text:str,request:Request):
     voice_id = '276'
     global generator
     if generator == None:
@@ -94,7 +96,16 @@ async def tts_flow_test(text:str):
         del generator
         torch.cuda.empty_cache()
         generator = init_generator(voice_id)
-    return StreamingResponse(generate_tts_flow(generator,text,i18n("中英混合"),5,1,1,True), media_type="audio/x-wav")
+    def generate_tts():
+        try:
+            for audio_chunk in generate_tts_flow(generator,text,i18n("中英混合"),5,1,1,True):
+                if asyncio.run(request.is_disconnected()):
+                    print("Client disconnected. Stopping TTS generation.")
+                    break
+                yield audio_chunk
+        except ConnectionError:
+            print("Connection error. Stopping TTS generation.")
+    return StreamingResponse(generate_tts(),media_type="audio/x-wav")
 
 
 def get_model_info(voice_id):
