@@ -51,6 +51,7 @@ def wave_header_chunk(frame_input=b"", channels=1, sample_width=2, sample_rate=3
 async def generate_tts_flow(generator,word,language,top_k,top_p,temperature,wave_head):
     if generator.last_gen != word:
         generator.last_gen = word
+        word = word.split('***|||***')[0]
         chunks = generator.get_tts_wav(ref_wav_path=generator.prompt_info['ref_wav_path'],
                             prompt_text=generator.prompt_info['prompt_text'],
                             prompt_language=generator.prompt_info['prompt_language'],
