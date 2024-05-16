@@ -571,7 +571,6 @@ class Generator():
             pred_semantic = pred_semantic[:, -idx:].unsqueeze(
                 0
             )  # .unsqueeze(0)#mq要多unsqueeze一次
-            log.warning(f'ref_wav_path:{ref_wav_path}')
             refer = self.sovits_model.get_spepc(ref_wav_path)  # .to(device)
             if self.sovits_model.is_half == True:
                 refer = refer.half().to(self.sovits_model.device)
