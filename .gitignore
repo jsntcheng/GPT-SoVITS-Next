@@ -1,6 +1,7 @@
 .DS_Store
 __pycache__
 *.pyc
+*.exe
 env
 runtime
 .idea
@@ -9,4 +10,7 @@ logs
 reference
 GPT_weights
 SoVITS_weights
+ffmpeg.exe
+ffplay.exe
+ffprobe.exe
 TEMP
