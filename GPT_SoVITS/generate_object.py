@@ -96,6 +96,7 @@ class BaseTorchModel:
         self.model = None
         self.model_is_init = False 
         self.model_is_load = False
+        self.alow_sleep = False
         self.model_awake = False
         self.name = '基础'
         self.model_path = model_path
@@ -130,28 +131,31 @@ class BaseTorchModel:
         self.model_is_load = True
     
     def sleep_model(self,device=None):
-        if device == None:
-            device = self.device
-        if device == 'cuda':
-            self.model.cpu()
-            self.model.eval()
-            self.model_awake = False
+        if self.alow_sleep:
+            if device == None:
+                device = self.device
+            if device == 'cuda':
+                self.model.cpu()
+                self.model.eval()
+                self.model_awake = False
+            log.info(f'{self.name}模型已休眠')
         torch.cuda.empty_cache()
-        log.info(f'{self.name}模型已休眠')
     
     def awake_model(self,device = None):
-        if device == None:
-            device = self.device
-        if self.model_awake == False and device == 'cuda':
-            if self.is_half:
-                self.model.half().cuda()
+        if self.alow_sleep:
+            if device == None:
+                device = self.device
+            if self.model_awake == False and device == 'cuda':
+                if self.is_half:
+                    self.model.half().cuda()
+                else:
+                    self.model.cuda()
+                self.model.eval()
+                self.model_awake = True
             else:
-                self.model.cuda()
-            self.model.eval()
-            self.model_awake = True
-        else:
-            self.model_awake = True
-        log.info(f'{self.name}模型已唤醒')
+                self.model_awake = True
+            log.info(f'{self.name}模型已唤醒')
+        torch.cuda.empty_cache()
         
 class BertModel(BaseTorchModel):
     def __init__(self,model_path,device):
